@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Ultra-Precision Scanner v2</title>
+  <title>DCM Smart Scanner PRO</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
@@ -14,37 +14,59 @@
       width: 40%; height: 60px; border: 3px solid #ef4444; 
       border-radius: 12px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.85); z-index: 10; 
     }
-    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #ef4444; box-shadow: 0 0 10px #ef4444; animation: move 1s infinite linear; }
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #ef4444; box-shadow: 0 0 10px #ef4444; animation: move 1.2s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
+    #status { transition: all 0.2s; }
   </style>
 </head>
 <body class="m-0 p-0 overflow-hidden">
   <div id="cameraContainer">
     <video id="videoPreview" autoplay playsinline muted></video>
     <div id="guide"><div class="scan-line"></div></div>
+    
     <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
-      <p id="status" class="text-white text-[10px] mb-6 font-bold opacity-70 uppercase tracking-widest">9-10 Digits Precise Match</p>
+      <div id="status-container" class="bg-black/40 backdrop-blur-md rounded-full py-2 mb-6 border border-white/10">
+        <p id="status" class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Initializing...</p>
+      </div>
       <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-bold border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
     </div>
   </div>
 
   <script>
     let stream = null;
-    let timer = null;
+    let isScanning = false;
+    const statusEl = document.getElementById('status');
 
     async function init() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', focusMode: 'continuous' } });
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment', focusMode: 'continuous' } 
+        });
         document.getElementById('videoPreview').srcObject = stream;
-        timer = setInterval(scan, 800);
-      } catch (e) { alert("Camera error: " + e); }
+        // 🌟 解析ループを開始
+        scanLoop();
+      } catch (e) { updateStatus("Camera Error", "text-red-500"); }
+    }
+
+    function updateStatus(text, colorClass = "text-white") {
+      statusEl.innerText = text;
+      statusEl.className = `font-black uppercase tracking-[0.2em] ${colorClass}`;
+    }
+
+    async function scanLoop() {
+      if (isScanning) return;
+      await scan();
+      // 解析が終わったら少し（100ms）休んで次へ。これで「渋滞」を防ぐ
+      setTimeout(scanLoop, 100);
     }
 
     async function scan() {
+      isScanning = true;
       const video = document.getElementById('videoPreview');
       const guide = document.getElementById('guide');
       const rect = guide.getBoundingClientRect();
       const videoRect = video.getBoundingClientRect();
+      
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
 
@@ -74,18 +96,26 @@
         
         const rawText = result.data.text.replace(/\s/g, '');
         
-        // 🌟 改良：9〜10桁（記号込み）のパターンに厳格マッチ
-        // 例: 2.0-00371 (9文字) または 12.0-00371 (10文字)
-        const pattern = /(?<![0-9])([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
-        const matches = rawText.match(pattern);
-        
-        if (matches && matches[1]) {
-          if (window.opener) {
-            window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[1] }, "*");
-            window.close();
+        // 🌟 ヒント判定ロジック
+        if (rawText.length === 0) {
+          updateStatus("Focusing... (ピントを合わせて)", "text-slate-400");
+        } else {
+          const pattern = /(?<![0-9])([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
+          const matches = rawText.match(pattern);
+          
+          if (matches && matches[1]) {
+            updateStatus("Detected!", "text-green-400");
+            if (window.opener) {
+              window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[1] }, "*");
+              window.close();
+            }
+          } else {
+            // 文字は見えているがIDの形式じゃない場合
+            updateStatus("Format Mismatch (枠内に数字を)", "text-yellow-500");
           }
         }
       } catch (e) { console.error(e); }
+      isScanning = false;
     }
     window.onload = init;
   </script>
