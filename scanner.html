@@ -10,21 +10,21 @@
     #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
     
-    /* 🌟 変更点：幅と高さを狭くしました */
+    /* 🌟 スキャン幅を50%に設定 */
     #guide { 
       position: absolute; 
-      top: 50%; 
+      top: 45%; /* ボタンとの重なりを避けるため少し上に配置 */
       left: 50%; 
       transform: translate(-50%, -50%); 
-      width: 70%;   /* 85% -> 70% */
-      height: 60px; /* 80px -> 60px */
+      width: 50%;   
+      height: 60px; 
       border: 3px solid #3b82f6; 
       border-radius: 12px; 
-      box-shadow: 0 0 0 2000px rgba(0,0,0,0.7); /* 周りを少し暗くして強調 */
+      box-shadow: 0 0 0 2000px rgba(0,0,0,0.75); 
       z-index: 10; 
     }
     
-    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.5s infinite linear; } /* アニメーションも少し速く */
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.5s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
   </style>
 </head>
@@ -32,9 +32,10 @@
   <div id="cameraContainer">
     <video id="videoPreview" autoplay playsinline muted></video>
     <div id="guide"><div class="scan-line"></div></div>
-    <div class="absolute bottom-10 inset-x-0 px-10 z-20 text-center">
-      <p id="status" class="text-white text-xs mb-4 font-bold opacity-70">Searching for ID...</p>
-      <button onclick="window.close()" class="w-full bg-white/10 text-white py-4 rounded-2xl font-bold border border-white/20 backdrop-blur-md active:bg-white/20 transition">CANCEL</button>
+    
+    <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
+      <p id="status" class="text-white text-[10px] mb-6 font-bold opacity-70 uppercase tracking-widest">Target: AnyPrefix + 0.0-00000</p>
+      <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-bold border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
     </div>
   </div>
 
@@ -46,7 +47,7 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         document.getElementById('videoPreview').srcObject = stream;
-        timer = setInterval(scan, 800); // スキャン間隔を少し短縮
+        timer = setInterval(scan, 800);
       } catch (e) {
         alert("カメラの起動に失敗しました。ブラウザの設定を確認してください。");
       }
@@ -55,17 +56,13 @@
     async function scan() {
       const video = document.getElementById('videoPreview');
       const guide = document.getElementById('guide');
-      
-      // 🌟 実際のガイド枠のサイズに合わせて切り抜く計算
       const rect = guide.getBoundingClientRect();
       const videoRect = video.getBoundingClientRect();
       
-      // ビデオの表示サイズと実際の解像度の比率
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
 
       const canvas = document.createElement('canvas');
-      // 切り抜く範囲を計算
       const cropX = (rect.left - videoRect.left) * scaleX;
       const cropY = (rect.top - videoRect.top) * scaleY;
       const cropWidth = rect.width * scaleX;
@@ -74,19 +71,26 @@
       canvas.width = cropWidth;
       canvas.height = cropHeight;
       const ctx = canvas.getContext('2d');
-      
-      // ガイド枠の部分だけをキャンバスに描画
       ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
       try {
-        // OCR実行
-        const result = await Tesseract.recognize(canvas, 'eng', { tessedit_char_whitelist: '0123456789.-' });
-        const rawText = result.data.text.replace(/\s/g, '');
-        const matches = rawText.match(/[0-9]+\.[0-9]+\-[0-9]+/g);
+        // 接頭辞を確実に読み取るため、英字(A-Z)も許可
+        const result = await Tesseract.recognize(canvas, 'eng', { 
+          tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-' 
+        });
         
-        if (matches) {
+        const rawText = result.data.text.replace(/\s/g, '').toUpperCase();
+        
+        // 🌟 改良：頭に何があっても「数字.数字-数字」のパターンだけを抽出
+        // 例: "UTP2.0-00001" -> group(1)は "2.0-00001"
+        const pattern = /.*?([0-9]+\.[0-9]+\-[0-9]+)/;
+        const matches = rawText.match(pattern);
+        
+        if (matches && matches[1]) {
+          const cleanId = matches[1];
+          
           if (window.opener) {
-            window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[0] }, "*");
+            window.opener.postMessage({ type: 'SCAN_RESULT', value: cleanId }, "*");
             window.close();
           }
         }
@@ -96,3 +100,4 @@
   </script>
 </body>
 </html>
+
