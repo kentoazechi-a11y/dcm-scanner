@@ -9,8 +9,22 @@
   <style>
     #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
-    #guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 85%; height: 80px; border: 3px solid #3b82f6; border-radius: 12px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.6); z-index: 10; }
-    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 2s infinite linear; }
+    
+    /* 🌟 変更点：幅と高さを狭くしました */
+    #guide { 
+      position: absolute; 
+      top: 50%; 
+      left: 50%; 
+      transform: translate(-50%, -50%); 
+      width: 70%;   /* 85% -> 70% */
+      height: 60px; /* 80px -> 60px */
+      border: 3px solid #3b82f6; 
+      border-radius: 12px; 
+      box-shadow: 0 0 0 2000px rgba(0,0,0,0.7); /* 周りを少し暗くして強調 */
+      z-index: 10; 
+    }
+    
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.5s infinite linear; } /* アニメーションも少し速く */
     @keyframes move { from { top: 0; } to { top: 100%; } }
   </style>
 </head>
@@ -32,31 +46,48 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         document.getElementById('videoPreview').srcObject = stream;
-        timer = setInterval(scan, 1000);
+        timer = setInterval(scan, 800); // スキャン間隔を少し短縮
       } catch (e) {
-        alert("カメラの起動に失敗しました。HTTPS環境かつ許可設定を確認してください。");
+        alert("カメラの起動に失敗しました。ブラウザの設定を確認してください。");
       }
     }
 
     async function scan() {
       const video = document.getElementById('videoPreview');
+      const guide = document.getElementById('guide');
+      
+      // 🌟 実際のガイド枠のサイズに合わせて切り抜く計算
+      const rect = guide.getBoundingClientRect();
+      const videoRect = video.getBoundingClientRect();
+      
+      // ビデオの表示サイズと実際の解像度の比率
+      const scaleX = video.videoWidth / videoRect.width;
+      const scaleY = video.videoHeight / videoRect.height;
+
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // 切り抜く範囲を計算
+      const cropX = (rect.left - videoRect.left) * scaleX;
+      const cropY = (rect.top - videoRect.top) * scaleY;
+      const cropWidth = rect.width * scaleX;
+      const cropHeight = rect.height * scaleY;
+
+      canvas.width = cropWidth;
+      canvas.height = cropHeight;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
+      
+      // ガイド枠の部分だけをキャンバスに描画
+      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
       try {
+        // OCR実行
         const result = await Tesseract.recognize(canvas, 'eng', { tessedit_char_whitelist: '0123456789.-' });
-        const matches = result.data.text.replace(/\s/g, '').match(/[0-9]+\.[0-9]+\-[0-9]+/g);
+        const rawText = result.data.text.replace(/\s/g, '');
+        const matches = rawText.match(/[0-9]+\.[0-9]+\-[0-9]+/g);
         
         if (matches) {
-          // 🌟 重要：開いた元のウィンドウ（GAS）に結果を送信
           if (window.opener) {
             window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[0] }, "*");
             window.close();
-          } else {
-            document.getElementById('status').innerText = "Result: " + matches[0] + " (Parent not found)";
           }
         }
       } catch (e) { console.error(e); }
