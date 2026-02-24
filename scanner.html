@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Pro Scanner</title>
+  <title>DCM Ultra-Precision Scanner v2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
@@ -11,10 +11,10 @@
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
     #guide { 
       position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); 
-      width: 50%; height: 60px; border: 3px solid #22c55e; 
-      border-radius: 12px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.8); z-index: 10; 
+      width: 40%; height: 60px; border: 3px solid #ef4444; 
+      border-radius: 12px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.85); z-index: 10; 
     }
-    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #22c55e; box-shadow: 0 0 10px #22c55e; animation: move 1.2s infinite linear; }
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #ef4444; box-shadow: 0 0 10px #ef4444; animation: move 1s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
   </style>
 </head>
@@ -23,7 +23,7 @@
     <video id="videoPreview" autoplay playsinline muted></video>
     <div id="guide"><div class="scan-line"></div></div>
     <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
-      <p id="status" class="text-white text-[10px] mb-6 font-bold opacity-70 uppercase tracking-widest">360° High-Precision Mode</p>
+      <p id="status" class="text-white text-[10px] mb-6 font-bold opacity-70 uppercase tracking-widest">9-10 Digits Precise Match</p>
       <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-bold border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
     </div>
   </div>
@@ -36,7 +36,7 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', focusMode: 'continuous' } });
         document.getElementById('videoPreview').srcObject = stream;
-        timer = setInterval(scan, 850);
+        timer = setInterval(scan, 800);
       } catch (e) { alert("Camera error: " + e); }
     }
 
@@ -53,19 +53,13 @@
       const cropX = (rect.left - videoRect.left) * scaleX;
       const cropY = (rect.top - videoRect.top) * scaleY;
 
-      // 🌟 連結用キャンバス（高さ2倍）
       const canvas = document.createElement('canvas');
       canvas.width = cropWidth;
       canvas.height = cropHeight * 2;
       const ctx = canvas.getContext('2d');
+      ctx.filter = 'grayscale(1) contrast(1.7) brightness(1.1)';
 
-      // 🌟 高精度フィルタ（グレースケール + コントラスト）
-      ctx.filter = 'grayscale(1) contrast(1.6) brightness(1.1)';
-
-      // 1. 上段（正位置）を描画
       ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-
-      // 2. 下段（180度回転）を描画
       ctx.save();
       ctx.translate(cropWidth / 2, cropHeight + (cropHeight / 2));
       ctx.rotate(Math.PI);
@@ -74,21 +68,20 @@
 
       try {
         const result = await Tesseract.recognize(canvas, 'eng', { 
-          tessedit_char_whitelist: '0123456789.-ABCDEFGHIJKLMNOPQRSTUVWXYZ',
-          tessedit_pageseg_mode: '6' // ブロックとして認識
+          tessedit_char_whitelist: '0123456789.-', 
+          tessedit_pageseg_mode: '6'
         });
         
-        const rawText = result.data.text.replace(/\s/g, '').toUpperCase();
+        const rawText = result.data.text.replace(/\s/g, '');
         
-        // 🌟 改良正規表現：[数字.数字] + [ハイフン] + [厳格に数字5桁で終了]
-        // \b または $ の代わりに、後ろに数字が続かないことを確認
-        const pattern = /([0-9]+\.[0-9]+\-[0-9]{5})(?![0-9])/;
+        // 🌟 改良：9〜10桁（記号込み）のパターンに厳格マッチ
+        // 例: 2.0-00371 (9文字) または 12.0-00371 (10文字)
+        const pattern = /(?<![0-9])([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
         const matches = rawText.match(pattern);
         
         if (matches && matches[1]) {
-          const cleanId = matches[1];
           if (window.opener) {
-            window.opener.postMessage({ type: 'SCAN_RESULT', value: cleanId }, "*");
+            window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[1] }, "*");
             window.close();
           }
         }
