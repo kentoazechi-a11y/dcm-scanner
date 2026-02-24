@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Smart Scanner PRO</title>
+  <title>DCM Smart Scanner v3</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
@@ -16,7 +16,6 @@
     }
     .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #ef4444; box-shadow: 0 0 10px #ef4444; animation: move 1.2s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
-    #status { transition: all 0.2s; }
   </style>
 </head>
 <body class="m-0 p-0 overflow-hidden">
@@ -26,7 +25,7 @@
     
     <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
       <div id="status-container" class="bg-black/40 backdrop-blur-md rounded-full py-2 mb-6 border border-white/10">
-        <p id="status" class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Initializing...</p>
+        <p id="status" class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Ready to Launch</p>
       </div>
       <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-bold border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
     </div>
@@ -37,36 +36,51 @@
     let isScanning = false;
     const statusEl = document.getElementById('status');
 
+    function updateStatus(text, colorClass = "text-white") {
+      statusEl.innerText = text;
+      statusEl.className = `font-black uppercase tracking-[0.2em] ${colorClass}`;
+      console.log("Status:", text);
+    }
+
     async function init() {
+      updateStatus("Starting Camera...");
       try {
         stream = await navigator.mediaDevices.getUserMedia({ 
           video: { facingMode: 'environment', focusMode: 'continuous' } 
         });
         document.getElementById('videoPreview').srcObject = stream;
-        // 🌟 解析ループを開始
+        
+        // 🌟 OCRエンジンを事前にロード
+        updateStatus("Loading OCR Engine...");
+        
+        // 解析ループ開始
         scanLoop();
-      } catch (e) { updateStatus("Camera Error", "text-red-500"); }
-    }
-
-    function updateStatus(text, colorClass = "text-white") {
-      statusEl.innerText = text;
-      statusEl.className = `font-black uppercase tracking-[0.2em] ${colorClass}`;
+      } catch (e) { 
+        updateStatus("Camera Error", "text-red-500");
+        console.error(e);
+      }
     }
 
     async function scanLoop() {
-      if (isScanning) return;
-      await scan();
-      // 解析が終わったら少し（100ms）休んで次へ。これで「渋滞」を防ぐ
-      setTimeout(scanLoop, 100);
+      if (!isScanning) {
+        await scan();
+      }
+      setTimeout(scanLoop, 150);
     }
 
     async function scan() {
       isScanning = true;
       const video = document.getElementById('videoPreview');
       const guide = document.getElementById('guide');
+      
+      // ビデオが準備できていない場合はスキップ
+      if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+        isScanning = false;
+        return;
+      }
+
       const rect = guide.getBoundingClientRect();
       const videoRect = video.getBoundingClientRect();
-      
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
 
@@ -89,6 +103,9 @@
       ctx.restore();
 
       try {
+        // 🌟 解析中のメッセージ
+        updateStatus("Scanning...");
+
         const result = await Tesseract.recognize(canvas, 'eng', { 
           tessedit_char_whitelist: '0123456789.-', 
           tessedit_pageseg_mode: '6'
@@ -96,28 +113,34 @@
         
         const rawText = result.data.text.replace(/\s/g, '');
         
-        // 🌟 ヒント判定ロジック
         if (rawText.length === 0) {
-          updateStatus("Focusing... (ピントを合わせて)", "text-slate-400");
+          updateStatus("Focusing...", "text-slate-400");
         } else {
           const pattern = /(?<![0-9])([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
           const matches = rawText.match(pattern);
           
           if (matches && matches[1]) {
-            updateStatus("Detected!", "text-green-400");
+            updateStatus("Found!", "text-green-400");
             if (window.opener) {
               window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[1] }, "*");
               window.close();
             }
           } else {
-            // 文字は見えているがIDの形式じゃない場合
-            updateStatus("Format Mismatch (枠内に数字を)", "text-yellow-500");
+            updateStatus("Searching...", "text-yellow-500");
           }
         }
-      } catch (e) { console.error(e); }
-      isScanning = false;
+      } catch (e) { 
+        console.error("OCR Error:", e);
+      } finally {
+        // 🌟 成功しても失敗しても、必ずスキャン中フラグを下ろす
+        isScanning = false;
+      }
     }
-    window.onload = init;
+
+    // 🌟 window.onloadの代わりに少し遅らせて実行（安定性向上）
+    window.addEventListener('load', () => {
+      setTimeout(init, 500);
+    });
   </script>
 </body>
 </html>
