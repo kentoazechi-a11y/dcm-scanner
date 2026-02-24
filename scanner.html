@@ -10,10 +10,9 @@
     #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
     
-    /* 🌟 スキャン幅を50%に設定 */
     #guide { 
       position: absolute; 
-      top: 45%; /* ボタンとの重なりを避けるため少し上に配置 */
+      top: 45%; 
       left: 50%; 
       transform: translate(-50%, -50%); 
       width: 50%;   
@@ -34,7 +33,7 @@
     <div id="guide"><div class="scan-line"></div></div>
     
     <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
-      <p id="status" class="text-white text-[10px] mb-6 font-bold opacity-70 uppercase tracking-widest">Target: AnyPrefix + 0.0-00000</p>
+      <p id="status" class="text-white text-[10px] mb-6 font-bold opacity-70 uppercase tracking-widest">360° Scan Mode Active</p>
       <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-bold border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
     </div>
   </div>
@@ -47,7 +46,7 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         document.getElementById('videoPreview').srcObject = stream;
-        timer = setInterval(scan, 800);
+        timer = setInterval(scan, 900); // 2倍の画像を処理するため間隔を微増
       } catch (e) {
         alert("カメラの起動に失敗しました。ブラウザの設定を確認してください。");
       }
@@ -62,33 +61,38 @@
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
 
-      const canvas = document.createElement('canvas');
-      const cropX = (rect.left - videoRect.left) * scaleX;
-      const cropY = (rect.top - videoRect.top) * scaleY;
       const cropWidth = rect.width * scaleX;
       const cropHeight = rect.height * scaleY;
+      const cropX = (rect.left - videoRect.left) * scaleX;
+      const cropY = (rect.top - videoRect.top) * scaleY;
 
+      // 🌟 連結用のキャンバス作成（高さ2倍）
+      const canvas = document.createElement('canvas');
       canvas.width = cropWidth;
-      canvas.height = cropHeight;
+      canvas.height = cropHeight * 2;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
+
+      // 1. 上半分に「正位置」の画像を描画
+      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+
+      // 2. 下半分に「180度回転させた」画像を描画
+      ctx.save();
+      ctx.translate(cropWidth / 2, cropHeight + (cropHeight / 2));
+      ctx.rotate(Math.PI);
+      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, -cropWidth / 2, -cropHeight / 2, cropWidth, cropHeight);
+      ctx.restore();
 
       try {
-        // 接頭辞を確実に読み取るため、英字(A-Z)も許可
         const result = await Tesseract.recognize(canvas, 'eng', { 
           tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-' 
         });
         
         const rawText = result.data.text.replace(/\s/g, '').toUpperCase();
-        
-        // 🌟 改良：頭に何があっても「数字.数字-数字」のパターンだけを抽出
-        // 例: "UTP2.0-00001" -> group(1)は "2.0-00001"
         const pattern = /.*?([0-9]+\.[0-9]+\-[0-9]+)/;
         const matches = rawText.match(pattern);
         
         if (matches && matches[1]) {
           const cleanId = matches[1];
-          
           if (window.opener) {
             window.opener.postMessage({ type: 'SCAN_RESULT', value: cleanId }, "*");
             window.close();
@@ -100,4 +104,5 @@
   </script>
 </body>
 </html>
+
 
