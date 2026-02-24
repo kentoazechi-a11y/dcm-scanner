@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>DCM Scanner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+  <style>
+    #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
+    #videoPreview { width: 100%; height: 100%; object-fit: cover; }
+    #guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 85%; height: 80px; border: 3px solid #3b82f6; border-radius: 12px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.6); z-index: 10; }
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 2s infinite linear; }
+    @keyframes move { from { top: 0; } to { top: 100%; } }
+  </style>
+</head>
+<body class="m-0 p-0 overflow-hidden">
+  <div id="cameraContainer">
+    <video id="videoPreview" autoplay playsinline muted></video>
+    <div id="guide"><div class="scan-line"></div></div>
+    <div class="absolute bottom-10 inset-x-0 px-10 z-20 text-center">
+      <p id="status" class="text-white text-xs mb-4 font-bold opacity-70">Searching for ID...</p>
+      <button onclick="window.close()" class="w-full bg-white/10 text-white py-4 rounded-2xl font-bold border border-white/20 backdrop-blur-md active:bg-white/20 transition">CANCEL</button>
+    </div>
+  </div>
+
+  <script>
+    let stream = null;
+    let timer = null;
+
+    async function init() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        document.getElementById('videoPreview').srcObject = stream;
+        timer = setInterval(scan, 1000);
+      } catch (e) {
+        alert("カメラの起動に失敗しました。HTTPS環境かつ許可設定を確認してください。");
+      }
+    }
+
+    async function scan() {
+      const video = document.getElementById('videoPreview');
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+
+      try {
+        const result = await Tesseract.recognize(canvas, 'eng', { tessedit_char_whitelist: '0123456789.-' });
+        const matches = result.data.text.replace(/\s/g, '').match(/[0-9]+\.[0-9]+\-[0-9]+/g);
+        
+        if (matches) {
+          // 🌟 重要：開いた元のウィンドウ（GAS）に結果を送信
+          if (window.opener) {
+            window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[0] }, "*");
+            window.close();
+          } else {
+            document.getElementById('status').innerText = "Result: " + matches[0] + " (Parent not found)";
+          }
+        }
+      } catch (e) { console.error(e); }
+    }
+    window.onload = init;
+  </script>
+</body>
+</html>
