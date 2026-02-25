@@ -2,19 +2,21 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Smart Scanner v4</title>
+  <title>DCM Ultra-Fast Scanner v6</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
   <style>
     #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
+    
+    /* 🌟 ガイド枠：中央の数字のみを狙い撃つスリムデザイン */
     #guide { 
       position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); 
-      width: 60%; height: 60px; border: 3px solid #3b82f6; 
-      border-radius: 12px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.8); z-index: 10; 
+      width: 50%; height: 50px; border: 4px solid #3b82f6; 
+      border-radius: 10px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.8); z-index: 10; 
     }
-    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.2s infinite linear; }
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.0s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
   </style>
 </head>
@@ -23,14 +25,14 @@
     <video id="videoPreview" autoplay playsinline muted></video>
     <div id="guide"><div class="scan-line"></div></div>
     
-    <div class="absolute bottom-28 inset-x-0 px-6 z-20 text-center">
+    <div class="absolute bottom-32 inset-x-0 px-6 z-20 text-center">
       <div id="preview-box" class="mb-2">
-        <p id="raw-text" class="text-blue-400 text-[14px] font-mono font-bold bg-black/60 inline-block px-3 py-1 rounded">Wait...</p>
+        <p id="raw-text" class="text-blue-400 text-[14px] font-mono font-black bg-black/60 inline-block px-3 py-1 rounded">Wait...</p>
       </div>
       <div id="status-container" class="bg-black/40 backdrop-blur-md rounded-full py-2 mb-6 border border-white/10">
         <p id="status" class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Ready</p>
       </div>
-      <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-bold border border-white/30 backdrop-blur-md active:bg-white/40 transition">CANCEL</button>
+      <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-black border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
     </div>
   </div>
 
@@ -40,11 +42,6 @@
     const statusEl = document.getElementById('status');
     const rawEl = document.getElementById('raw-text');
 
-    function updateStatus(text, colorClass = "text-white") {
-      statusEl.innerText = text;
-      statusEl.className = `font-black uppercase tracking-[0.2em] ${colorClass}`;
-    }
-
     async function init() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ 
@@ -52,12 +49,13 @@
         });
         document.getElementById('videoPreview').srcObject = stream;
         scanLoop();
-      } catch (e) { updateStatus("Camera Error", "text-red-500"); }
+      } catch (e) { statusEl.innerText = "Camera Error"; }
     }
 
     async function scanLoop() {
       if (!isScanning) await scan();
-      setTimeout(scanLoop, 100);
+      // 処理の速さに合わせてウェイトを極小化 (50ms)
+      setTimeout(scanLoop, 50);
     }
 
     async function scan() {
@@ -71,54 +69,60 @@
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
 
-      const cropWidth = rect.width * scaleX;
-      const cropHeight = rect.height * scaleY;
-      const cropX = (rect.left - videoRect.left) * scaleX;
-      const cropY = (rect.top - videoRect.top) * scaleY;
-
+      // 🌟 解析用キャンバス（解像度を最適化）
+      const cropW = rect.width * scaleX;
+      const cropH = rect.height * scaleY;
       const canvas = document.createElement('canvas');
-      canvas.width = cropWidth;
-      canvas.height = cropHeight * 2;
-      const ctx = canvas.getContext('2d');
-      ctx.filter = 'grayscale(1) contrast(1.7) brightness(1.1)';
+      canvas.width = cropW;
+      canvas.height = cropH * 2; // 上下反転用
+      const ctx = canvas.getContext('2d', { alpha: false });
+      
+      // 🌟 強力なコントラストフィルタ
+      ctx.filter = 'grayscale(1) contrast(1.8) brightness(1.1)';
 
-      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+      const cx = (rect.left - videoRect.left) * scaleX;
+      const cy = (rect.top - videoRect.top) * scaleY;
+
+      // 正位置
+      ctx.drawImage(video, cx, cy, cropW, cropH, 0, 0, cropW, cropH);
+      // 180度反転
       ctx.save();
-      ctx.translate(cropWidth / 2, cropHeight + (cropHeight / 2));
+      ctx.translate(cropW / 2, cropH + (cropH / 2));
       ctx.rotate(Math.PI);
-      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, -cropWidth / 2, -cropHeight / 2, cropWidth, cropHeight);
+      ctx.drawImage(video, cx, cy, cropW, cropH, -cropW / 2, -cropH / 2, cropW, cropH);
       ctx.restore();
 
       try {
         const result = await Tesseract.recognize(canvas, 'eng', { 
-          // 🌟 アルファベットも読み込むように変更
-          tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-', 
-          tessedit_pageseg_mode: '6'
+          // 🌟 徹底的なホワイトリスト（数字と記号のみ）
+          tessedit_char_whitelist: '0123456789.-', 
+          tessedit_pageseg_mode: '6' 
         });
         
-        const rawText = result.data.text.replace(/\s/g, '').toUpperCase();
-        
-        // 🌟 生の認識結果を表示（現場での調整用）
+        const rawText = result.data.text.replace(/\s/g, '');
         rawEl.innerText = rawText || "---";
 
         if (rawText.length > 0) {
-          // 🌟 どんな文字で始まっていても、「数字.数字-数字5桁」の部分だけを抽出
-          const pattern = /.*?([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
+          // 🌟 9桁(0.0-00000) または 10桁(00.0-00000) に厳密マッチ
+          const pattern = /(?<![0-9])([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
           const matches = rawText.match(pattern);
           
           if (matches && matches[1]) {
             const cleanId = matches[1];
-            updateStatus("Found: " + cleanId, "text-green-400");
+            statusEl.innerText = "MATCH: " + cleanId;
+            statusEl.className = "text-green-400 font-black tracking-widest";
             
             if (window.opener) {
               window.opener.postMessage({ type: 'SCAN_RESULT', value: cleanId }, "*");
               window.close();
             }
           } else {
-            updateStatus("Searching...", "text-yellow-500");
+            statusEl.innerText = "Targeting...";
+            statusEl.className = "text-yellow-500 font-black tracking-widest";
           }
         } else {
-          updateStatus("Focusing...", "text-slate-400");
+          statusEl.innerText = "Ready";
+          statusEl.className = "text-white font-black tracking-widest";
         }
       } catch (e) { console.error(e); }
       isScanning = false;
