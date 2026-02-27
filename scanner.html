@@ -2,30 +2,32 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Scanner v2.0</title>
+  <title>DCM Scanner v2.3</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
   <style>
     #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
+    
+    /* 🌟 変更点：幅 49% (70%から30%減) / 高さ 48px (60pxから20%減) */
     #guide { 
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
-      width: 70%; height: 60px; border: 3px solid #3b82f6; border-radius: 12px; 
+      width: 49%; height: 48px; border: 3px solid #3b82f6; border-radius: 12px; 
       box-shadow: 0 0 0 2000px rgba(0,0,0,0.7); z-index: 10; 
     }
+    
     .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.2s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
-    #debugCanvas { position: absolute; top: 10px; left: 10px; width: 120px; border: 1px solid white; display: none; } /* デバッグ用 */
   </style>
 </head>
 <body class="m-0 p-0 overflow-hidden">
   <div id="cameraContainer">
     <video id="videoPreview" autoplay playsinline muted></video>
-    <canvas id="debugCanvas"></canvas>
     <div id="guide"><div class="scan-line"></div></div>
-    <div class="absolute bottom-10 inset-x-0 px-10 z-20 text-center">
-      <p id="status" class="text-white text-[10px] mb-4 font-black uppercase tracking-widest opacity-70">Initializing OCR Engine...</p>
+    
+    <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
+      <p id="status" class="text-white text-[10px] mb-4 font-black uppercase tracking-widest opacity-70">Searching for ID...</p>
       <button onclick="window.close()" class="w-full bg-white/10 text-white py-4 rounded-2xl font-bold border border-white/20 backdrop-blur-md active:bg-white/20 transition">CANCEL</button>
     </div>
   </div>
@@ -38,11 +40,10 @@
     async function init() {
       const statusEl = document.getElementById('status');
       try {
-        // 🌟 職人(Worker)を1回だけ作成
         worker = await Tesseract.createWorker('eng');
         await worker.setParameters({
-          tessedit_char_whitelist: '0123456789.-', // 許可する文字を制限
-          tessedit_pageseg_mode: 7, // 🌟 PSM 7: SINGLE_LINE として扱う
+          tessedit_char_whitelist: '0123456789.-',
+          tessedit_pageseg_mode: 7, 
         });
 
         stream = await navigator.mediaDevices.getUserMedia({ 
@@ -52,7 +53,7 @@
         
         statusEl.innerText = "Searching for ID...";
         isScanning = true;
-        loop(); // スキャンループ開始
+        loop(); 
       } catch (e) {
         statusEl.innerText = "Camera/OCR Init Failed";
         console.error(e);
@@ -62,8 +63,7 @@
     async function loop() {
       if (!isScanning) return;
       await scan();
-      // 次のスキャンまで少し待機 (負荷軽減)
-      setTimeout(loop, 200); 
+      setTimeout(loop, 250); 
     }
 
     async function scan() {
@@ -83,37 +83,33 @@
       canvas.height = cropHeight;
 
       const ctx = canvas.getContext('2d');
-      // 🌟 ガイド枠の部分を切り抜いて描画
       ctx.drawImage(video, (rect.left - videoRect.left) * scaleX, (rect.top - videoRect.top) * scaleY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
-      // 🌟 【重要】画像の前処理：グレースケール化してコントラストを強調
       preprocess(ctx, canvas.width, canvas.height);
 
       try {
-        // 🌟 職人にキャンバスを渡して解析
         const { data: { text } } = await worker.recognize(canvas);
         const rawText = text.replace(/\s/g, '');
-        const matches = rawText.match(/[0-9]+\.[0-9]+\-[0-9]+/g);
+        const regex = /(?:^|[^0-9])(\d{1,2}\.\d{1}-\d{5})(?:$|[^0-9])/;
+        const match = rawText.match(regex);
         
-        if (matches) {
+        if (match) {
+          const foundId = match[1];
           isScanning = false;
           if (window.opener) {
-            window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[0] }, "*");
+            window.opener.postMessage({ type: 'SCAN_RESULT', value: foundId }, "*");
             window.close();
           }
         }
       } catch (e) { console.error(e); }
     }
 
-    // 🌟 画像の前処理関数
     function preprocess(ctx, w, h) {
       const imgData = ctx.getImageData(0, 0, w, h);
       const d = imgData.data;
       for (let i = 0; i < d.length; i += 4) {
-        // グレースケール化
         const gray = 0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2];
-        // 🌟 コントラスト強調（二値化に近い処理）
-        const v = gray > 128 ? 255 : 0; 
+        const v = gray > 140 ? 255 : 0; 
         d[i] = d[i+1] = d[i+2] = v;
       }
       ctx.putImageData(imgData, 0, 0);
