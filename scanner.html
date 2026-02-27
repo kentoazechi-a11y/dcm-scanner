@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Scanner v2.5 (Cylinder Support)</title>
+  <title>DCM Scanner v2.6 (Anti-Misread)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
@@ -22,9 +22,8 @@
   <div id="cameraContainer">
     <video id="videoPreview" autoplay playsinline muted></video>
     <div id="guide"><div class="scan-line"></div></div>
-    
     <div class="absolute bottom-32 inset-x-0 px-10 z-20 text-center">
-      <p id="status" class="text-white text-[10px] mb-4 font-black uppercase tracking-widest opacity-70">Searching for ID...</p>
+      <p id="status" class="text-white text-[10px] mb-4 font-black uppercase tracking-widest opacity-70">Focus on ID...</p>
       <button onclick="window.close()" class="w-full bg-white/10 text-white py-4 rounded-2xl font-bold border border-white/20 backdrop-blur-md active:bg-white/20 transition">CANCEL</button>
     </div>
   </div>
@@ -33,6 +32,9 @@
     let stream = null;
     let worker = null;
     let isScanning = false;
+    let lastResult = "";
+    let confirmCount = 0; // 🌟 連続一致カウント
+    const REQUIRED_CONFIRMS = 2; // 🌟 2回連続一致で確定（精度重視なら3）
     const ID_REGEX = /(?:^|[^0-9])(\d{1,2}\.\d{1}-\d{5})(?:$|[^0-9])/;
 
     async function init() {
@@ -41,7 +43,10 @@
         worker = await Tesseract.createWorker('eng');
         await worker.setParameters({
           tessedit_char_whitelist: '0123456789.-',
-          tessedit_pageseg_mode: 7, 
+          tessedit_pageseg_mode: 7,
+          // 🌟 辞書機能をOFFにして誤認率を減らす
+          load_system_dawg: '0',
+          load_freq_dawg: '0'
         });
 
         stream = await navigator.mediaDevices.getUserMedia({ 
@@ -49,19 +54,15 @@
         });
         document.getElementById('videoPreview').srcObject = stream;
         
-        statusEl.innerText = "Searching for ID...";
         isScanning = true;
         loop(); 
-      } catch (e) {
-        statusEl.innerText = "Camera/OCR Init Failed";
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     }
 
     async function loop() {
       if (!isScanning) return;
       await scan();
-      setTimeout(loop, 150); // 曲面対応で精度を上げるため、少し間隔を詰めて試行回数を増やす
+      setTimeout(loop, 120); 
     }
 
     async function scan() {
@@ -71,34 +72,46 @@
 
       const rect = guide.getBoundingClientRect();
       const videoRect = video.getBoundingClientRect();
+      const canvas = document.createElement('canvas');
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
-
-      const canvas = document.createElement('canvas');
       const cropWidth = rect.width * scaleX;
       const cropHeight = rect.height * scaleY;
-      canvas.width = cropWidth;
-      canvas.height = cropHeight;
+      canvas.width = cropWidth; canvas.height = cropHeight;
 
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, (rect.left - videoRect.left) * scaleX, (rect.top - videoRect.top) * scaleY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
-      // 🌟 曲面ラベル向け前処理（鮮鋭化＋コントラスト拡張）
+      // 🌟 前処理：鮮鋭化 + 膨張(Dilation)
       preprocess(ctx, canvas.width, canvas.height);
 
-      // 通常と180度反転を同時にリクエスト（並列処理）
-      const results = await Promise.all([
-        tryMatch(canvas),
-        getFlippedMatch(canvas)
-      ]);
+      const res = await Promise.all([tryMatch(canvas), getFlippedMatch(canvas)]);
+      const found = res.find(v => v !== null);
 
-      if (results.includes(true)) isScanning = false;
+      if (found) {
+        if (found === lastResult) {
+          confirmCount++;
+          document.getElementById('status').innerText = `STABILIZING... (${confirmCount}/${REQUIRED_CONFIRMS})`;
+        } else {
+          lastResult = found;
+          confirmCount = 1;
+        }
+
+        if (confirmCount >= REQUIRED_CONFIRMS) {
+          isScanning = false;
+          if (window.opener) {
+            window.opener.postMessage({ type: 'SCAN_RESULT', value: found }, "*");
+            window.close();
+          }
+        }
+      } else {
+        // 何も写っていない時はリセットせずカウントを維持（手ブレ対策）
+      }
     }
 
     async function getFlippedMatch(originalCanvas) {
       const flipped = document.createElement('canvas');
-      flipped.width = originalCanvas.width;
-      flipped.height = originalCanvas.height;
+      flipped.width = originalCanvas.width; flipped.height = originalCanvas.height;
       const fCtx = flipped.getContext('2d');
       fCtx.translate(flipped.width / 2, flipped.height / 2);
       fCtx.rotate(Math.PI);
@@ -109,50 +122,28 @@
     async function tryMatch(targetCanvas) {
       try {
         const { data: { text } } = await worker.recognize(targetCanvas);
-        const rawText = text.replace(/\s/g, '');
-        const match = rawText.match(ID_REGEX);
-        
-        if (match) {
-          if (window.opener) {
-            window.opener.postMessage({ type: 'SCAN_RESULT', value: match[1] }, "*");
-            window.close();
-          }
-          return true;
-        }
-      } catch (e) { console.error(e); }
-      return false;
+        const match = text.replace(/\s/g, '').match(ID_REGEX);
+        return match ? match[1] : null;
+      } catch (e) { return null; }
     }
 
-    // 🌟 強化された画像前処理
     function preprocess(ctx, w, h) {
       let imgData = ctx.getImageData(0, 0, w, h);
       let d = imgData.data;
 
-      // 1. グレースケール & コントラスト最大化
-      let min = 255, max = 0;
+      // 1. 二値化（影を飛ばす）
       for (let i = 0; i < d.length; i += 4) {
-        const gray = 0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2];
-        d[i] = d[i+1] = d[i+2] = gray;
-        if (gray < min) min = gray;
-        if (gray > max) max = gray;
+        const v = (0.21 * d[i] + 0.72 * d[i+1] + 0.07 * d[i+2]) > 135 ? 255 : 0;
+        d[i] = d[i+1] = d[i+2] = v;
       }
-
-      // 2. 輝度のストレッチ（曲面の影を飛ばす）
-      const range = max - min;
-      for (let i = 0; i < d.length; i += 4) {
-        let v = ((d[i] - min) / range) * 255;
-        // 二値化（境界を強める）
-        d[i] = d[i+1] = d[i+2] = v > 130 ? 255 : 0;
-      }
-
+      
+      // 🌟 2. 膨張 (Dilation): 黒い文字を1ピクセル太くする
+      // これにより「1」の細い線を補強し「7」との差を明確にします
       ctx.putImageData(imgData, 0, 0);
-
-      // 3. 鮮鋭化（ラプラシアンフィルタ的な強調）
-      // 円柱状の歪みでぼやけた文字の縁を立てる
-      ctx.globalAlpha = 0.5;
-      ctx.drawImage(ctx.canvas, -1, -1);
-      ctx.drawImage(ctx.canvas, 1, 1);
-      ctx.globalAlpha = 1.0;
+      ctx.globalCompositeOperation = "darken";
+      ctx.drawImage(ctx.canvas, -1, 0);
+      ctx.drawImage(ctx.canvas, 1, 0);
+      ctx.globalCompositeOperation = "source-over";
     }
 
     window.onload = init;
