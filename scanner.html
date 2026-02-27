@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Scanner v2.4 (Rotation Support)</title>
+  <title>DCM Scanner v2.5 (Cylinder Support)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
@@ -33,7 +33,6 @@
     let stream = null;
     let worker = null;
     let isScanning = false;
-    // 正規表現：0.0-00000 または 00.0-00000
     const ID_REGEX = /(?:^|[^0-9])(\d{1,2}\.\d{1}-\d{5})(?:$|[^0-9])/;
 
     async function init() {
@@ -62,7 +61,7 @@
     async function loop() {
       if (!isScanning) return;
       await scan();
-      setTimeout(loop, 250); 
+      setTimeout(loop, 150); // 曲面対応で精度を上げるため、少し間隔を詰めて試行回数を増やす
     }
 
     async function scan() {
@@ -84,26 +83,29 @@
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, (rect.left - videoRect.left) * scaleX, (rect.top - videoRect.top) * scaleY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
-      // 画像の前処理（グレースケール・コントラスト強調）
+      // 🌟 曲面ラベル向け前処理（鮮鋭化＋コントラスト拡張）
       preprocess(ctx, canvas.width, canvas.height);
 
-      // 🌟 1. 通常の向きで解析
-      if (await tryMatch(canvas)) return;
+      // 通常と180度反転を同時にリクエスト（並列処理）
+      const results = await Promise.all([
+        tryMatch(canvas),
+        getFlippedMatch(canvas)
+      ]);
 
-      // 🌟 2. 見つからなかった場合、180度回転させて再解析
-      const flippedCanvas = document.createElement('canvas');
-      flippedCanvas.width = canvas.width;
-      flippedCanvas.height = canvas.height;
-      const fCtx = flippedCanvas.getContext('2d');
-      
-      fCtx.translate(canvas.width / 2, canvas.height / 2);
-      fCtx.rotate(Math.PI); // 180度回転
-      fCtx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-
-      await tryMatch(flippedCanvas);
+      if (results.includes(true)) isScanning = false;
     }
 
-    // 文字列の解析とマッチング
+    async function getFlippedMatch(originalCanvas) {
+      const flipped = document.createElement('canvas');
+      flipped.width = originalCanvas.width;
+      flipped.height = originalCanvas.height;
+      const fCtx = flipped.getContext('2d');
+      fCtx.translate(flipped.width / 2, flipped.height / 2);
+      fCtx.rotate(Math.PI);
+      fCtx.drawImage(originalCanvas, -flipped.width / 2, -flipped.height / 2);
+      return await tryMatch(flipped);
+    }
+
     async function tryMatch(targetCanvas) {
       try {
         const { data: { text } } = await worker.recognize(targetCanvas);
@@ -111,7 +113,6 @@
         const match = rawText.match(ID_REGEX);
         
         if (match) {
-          isScanning = false;
           if (window.opener) {
             window.opener.postMessage({ type: 'SCAN_RESULT', value: match[1] }, "*");
             window.close();
@@ -122,15 +123,36 @@
       return false;
     }
 
+    // 🌟 強化された画像前処理
     function preprocess(ctx, w, h) {
-      const imgData = ctx.getImageData(0, 0, w, h);
-      const d = imgData.data;
+      let imgData = ctx.getImageData(0, 0, w, h);
+      let d = imgData.data;
+
+      // 1. グレースケール & コントラスト最大化
+      let min = 255, max = 0;
       for (let i = 0; i < d.length; i += 4) {
         const gray = 0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2];
-        const v = gray > 140 ? 255 : 0; 
-        d[i] = d[i+1] = d[i+2] = v;
+        d[i] = d[i+1] = d[i+2] = gray;
+        if (gray < min) min = gray;
+        if (gray > max) max = gray;
       }
+
+      // 2. 輝度のストレッチ（曲面の影を飛ばす）
+      const range = max - min;
+      for (let i = 0; i < d.length; i += 4) {
+        let v = ((d[i] - min) / range) * 255;
+        // 二値化（境界を強める）
+        d[i] = d[i+1] = d[i+2] = v > 130 ? 255 : 0;
+      }
+
       ctx.putImageData(imgData, 0, 0);
+
+      // 3. 鮮鋭化（ラプラシアンフィルタ的な強調）
+      // 円柱状の歪みでぼやけた文字の縁を立てる
+      ctx.globalAlpha = 0.5;
+      ctx.drawImage(ctx.canvas, -1, -1);
+      ctx.drawImage(ctx.canvas, 1, 1);
+      ctx.globalAlpha = 1.0;
     }
 
     window.onload = init;
