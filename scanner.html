@@ -2,134 +2,125 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>DCM Ultra-Fast Scanner v6</title>
+  <title>DCM Scanner v2.0</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
   <style>
     #cameraContainer { width: 100%; height: 100vh; background: black; position: relative; overflow: hidden; }
     #videoPreview { width: 100%; height: 100%; object-fit: cover; }
-    
-    /* 🌟 ガイド枠：中央の数字のみを狙い撃つスリムデザイン */
     #guide { 
-      position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); 
-      width: 50%; height: 50px; border: 4px solid #3b82f6; 
-      border-radius: 10px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.8); z-index: 10; 
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+      width: 70%; height: 60px; border: 3px solid #3b82f6; border-radius: 12px; 
+      box-shadow: 0 0 0 2000px rgba(0,0,0,0.7); z-index: 10; 
     }
-    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.0s infinite linear; }
+    .scan-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #3b82f6; box-shadow: 0 0 10px #3b82f6; animation: move 1.2s infinite linear; }
     @keyframes move { from { top: 0; } to { top: 100%; } }
+    #debugCanvas { position: absolute; top: 10px; left: 10px; width: 120px; border: 1px solid white; display: none; } /* デバッグ用 */
   </style>
 </head>
 <body class="m-0 p-0 overflow-hidden">
   <div id="cameraContainer">
     <video id="videoPreview" autoplay playsinline muted></video>
+    <canvas id="debugCanvas"></canvas>
     <div id="guide"><div class="scan-line"></div></div>
-    
-    <div class="absolute bottom-32 inset-x-0 px-6 z-20 text-center">
-      <div id="preview-box" class="mb-2">
-        <p id="raw-text" class="text-blue-400 text-[14px] font-mono font-black bg-black/60 inline-block px-3 py-1 rounded">Wait...</p>
-      </div>
-      <div id="status-container" class="bg-black/40 backdrop-blur-md rounded-full py-2 mb-6 border border-white/10">
-        <p id="status" class="text-white text-[10px] font-black uppercase tracking-[0.2em]">Ready</p>
-      </div>
-      <button onclick="window.close()" class="w-full bg-white/20 text-white py-4 rounded-2xl font-black border border-white/30 backdrop-blur-md active:bg-white/40 transition shadow-lg">CANCEL</button>
+    <div class="absolute bottom-10 inset-x-0 px-10 z-20 text-center">
+      <p id="status" class="text-white text-[10px] mb-4 font-black uppercase tracking-widest opacity-70">Initializing OCR Engine...</p>
+      <button onclick="window.close()" class="w-full bg-white/10 text-white py-4 rounded-2xl font-bold border border-white/20 backdrop-blur-md active:bg-white/20 transition">CANCEL</button>
     </div>
   </div>
 
   <script>
     let stream = null;
+    let worker = null;
     let isScanning = false;
-    const statusEl = document.getElementById('status');
-    const rawEl = document.getElementById('raw-text');
 
     async function init() {
+      const statusEl = document.getElementById('status');
       try {
+        // 🌟 職人(Worker)を1回だけ作成
+        worker = await Tesseract.createWorker('eng');
+        await worker.setParameters({
+          tessedit_char_whitelist: '0123456789.-', // 許可する文字を制限
+          tessedit_pageseg_mode: 7, // 🌟 PSM 7: SINGLE_LINE として扱う
+        });
+
         stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'environment', focusMode: 'continuous' } 
+          video: { facingMode: 'environment', focusMode: 'continuous', width: { ideal: 1280 }, height: { ideal: 720 } } 
         });
         document.getElementById('videoPreview').srcObject = stream;
-        scanLoop();
-      } catch (e) { statusEl.innerText = "Camera Error"; }
+        
+        statusEl.innerText = "Searching for ID...";
+        isScanning = true;
+        loop(); // スキャンループ開始
+      } catch (e) {
+        statusEl.innerText = "Camera/OCR Init Failed";
+        console.error(e);
+      }
     }
 
-    async function scanLoop() {
-      if (!isScanning) await scan();
-      // 処理の速さに合わせてウェイトを極小化 (50ms)
-      setTimeout(scanLoop, 50);
+    async function loop() {
+      if (!isScanning) return;
+      await scan();
+      // 次のスキャンまで少し待機 (負荷軽減)
+      setTimeout(loop, 200); 
     }
 
     async function scan() {
-      isScanning = true;
       const video = document.getElementById('videoPreview');
       const guide = document.getElementById('guide');
-      if (video.readyState !== video.HAVE_ENOUGH_DATA) { isScanning = false; return; }
+      if (video.readyState !== 4) return;
 
       const rect = guide.getBoundingClientRect();
       const videoRect = video.getBoundingClientRect();
       const scaleX = video.videoWidth / videoRect.width;
       const scaleY = video.videoHeight / videoRect.height;
 
-      // 🌟 解析用キャンバス（解像度を最適化）
-      const cropW = rect.width * scaleX;
-      const cropH = rect.height * scaleY;
       const canvas = document.createElement('canvas');
-      canvas.width = cropW;
-      canvas.height = cropH * 2; // 上下反転用
-      const ctx = canvas.getContext('2d', { alpha: false });
-      
-      // 🌟 強力なコントラストフィルタ
-      ctx.filter = 'grayscale(1) contrast(1.8) brightness(1.1)';
+      const cropWidth = rect.width * scaleX;
+      const cropHeight = rect.height * scaleY;
+      canvas.width = cropWidth;
+      canvas.height = cropHeight;
 
-      const cx = (rect.left - videoRect.left) * scaleX;
-      const cy = (rect.top - videoRect.top) * scaleY;
+      const ctx = canvas.getContext('2d');
+      // 🌟 ガイド枠の部分を切り抜いて描画
+      ctx.drawImage(video, (rect.left - videoRect.left) * scaleX, (rect.top - videoRect.top) * scaleY, cropWidth, cropHeight, 0, 0, canvas.width, canvas.height);
 
-      // 正位置
-      ctx.drawImage(video, cx, cy, cropW, cropH, 0, 0, cropW, cropH);
-      // 180度反転
-      ctx.save();
-      ctx.translate(cropW / 2, cropH + (cropH / 2));
-      ctx.rotate(Math.PI);
-      ctx.drawImage(video, cx, cy, cropW, cropH, -cropW / 2, -cropH / 2, cropW, cropH);
-      ctx.restore();
+      // 🌟 【重要】画像の前処理：グレースケール化してコントラストを強調
+      preprocess(ctx, canvas.width, canvas.height);
 
       try {
-        const result = await Tesseract.recognize(canvas, 'eng', { 
-          // 🌟 徹底的なホワイトリスト（数字と記号のみ）
-          tessedit_char_whitelist: '0123456789.-', 
-          tessedit_pageseg_mode: '6' 
-        });
+        // 🌟 職人にキャンバスを渡して解析
+        const { data: { text } } = await worker.recognize(canvas);
+        const rawText = text.replace(/\s/g, '');
+        const matches = rawText.match(/[0-9]+\.[0-9]+\-[0-9]+/g);
         
-        const rawText = result.data.text.replace(/\s/g, '');
-        rawEl.innerText = rawText || "---";
-
-        if (rawText.length > 0) {
-          // 🌟 9桁(0.0-00000) または 10桁(00.0-00000) に厳密マッチ
-          const pattern = /(?<![0-9])([0-9]{1,2}\.[0-9]\-[0-9]{5})(?![0-9])/;
-          const matches = rawText.match(pattern);
-          
-          if (matches && matches[1]) {
-            const cleanId = matches[1];
-            statusEl.innerText = "MATCH: " + cleanId;
-            statusEl.className = "text-green-400 font-black tracking-widest";
-            
-            if (window.opener) {
-              window.opener.postMessage({ type: 'SCAN_RESULT', value: cleanId }, "*");
-              window.close();
-            }
-          } else {
-            statusEl.innerText = "Targeting...";
-            statusEl.className = "text-yellow-500 font-black tracking-widest";
+        if (matches) {
+          isScanning = false;
+          if (window.opener) {
+            window.opener.postMessage({ type: 'SCAN_RESULT', value: matches[0] }, "*");
+            window.close();
           }
-        } else {
-          statusEl.innerText = "Ready";
-          statusEl.className = "text-white font-black tracking-widest";
         }
       } catch (e) { console.error(e); }
-      isScanning = false;
     }
 
-    window.addEventListener('load', () => setTimeout(init, 500));
+    // 🌟 画像の前処理関数
+    function preprocess(ctx, w, h) {
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        // グレースケール化
+        const gray = 0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2];
+        // 🌟 コントラスト強調（二値化に近い処理）
+        const v = gray > 128 ? 255 : 0; 
+        d[i] = d[i+1] = d[i+2] = v;
+      }
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    window.onload = init;
+    window.onunload = async () => { if(worker) await worker.terminate(); };
   </script>
 </body>
 </html>
-
