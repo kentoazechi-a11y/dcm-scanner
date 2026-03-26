@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>DCM Search Scanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+    #video { width: 100%; height: 100vh; object-fit: cover; }
+    .overlay { position: fixed; inset: 0; border: 2px solid rgba(59, 130, 246, 0.5); pointer-events: none; }
+    .scan-region { 
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 80%; height: 120px; border: 2px solid #3b82f6; border-radius: 16px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+    }
+    .scan-line {
+      position: absolute; top: 0; left: 0; width: 100%; height: 2px;
+      background: #3b82f6; animation: scan 2s linear infinite;
+    }
+    @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
+  </style>
+</head>
+<body>
+
+  <video id="video" autoplay playsinline></video>
+  
+  <div class="overlay">
+    <div class="scan-region">
+      <div class="scan-line"></div>
+    </div>
+  </div>
+
+  <div class="fixed bottom-10 inset-x-0 flex flex-col items-center gap-4 px-6">
+    <div id="resultText" class="bg-white/90 backdrop-blur px-6 py-3 rounded-2xl font-black text-blue-600 text-lg shadow-2xl min-h-[50px] flex items-center justify-center border-2 border-blue-500">
+      Scanning...
+    </div>
+    
+    <div class="flex gap-4 w-full max-w-xs">
+      <button onclick="window.close()" class="flex-1 bg-slate-800 text-white py-4 rounded-2xl font-bold shadow-lg">CANCEL</button>
+      <button onclick="sendResult()" id="sendBtn" class="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg opacity-50 pointer-events-none">USE THIS</button>
+    </div>
+  </div>
+
+  <canvas id="canvas" class="hidden"></canvas>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const resultDisplay = document.getElementById('resultText');
+    const sendBtn = document.getElementById('sendBtn');
+    let lastDetected = "";
+    let isProcessing = false;
+
+    async function setupCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          video.play();
+          startOCR();
+        };
+      } catch (err) {
+        alert("Camera error: " + err.name);
+      }
+    }
+
+    async function startOCR() {
+      const worker = await Tesseract.createWorker('eng');
+      // 汎用検索のため、記号や英数字を広く許可
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/:._',
+      });
+
+      const loop = async () => {
+        if (isProcessing) { requestAnimationFrame(loop); return; }
+        isProcessing = true;
+
+        const ctx = canvas.getContext('2d');
+        // スキャン領域（中央の四角）だけを切り抜いてOCRにかける
+        const scale = video.videoWidth / video.clientWidth;
+        const region = {
+          w: video.clientWidth * 0.8 * scale,
+          h: 120 * scale,
+          x: (video.clientWidth * 0.1) * scale,
+          y: (video.clientHeight / 2 - 60) * scale
+        };
+
+        canvas.width = region.w;
+        canvas.height = region.h;
+        ctx.drawImage(video, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+
+        const { data: { text } } = await worker.recognize(canvas);
+        const cleanText = text.trim().replace(/\s+/g, '');
+
+        if (cleanText.length > 2) {
+          lastDetected = cleanText;
+          resultDisplay.innerText = lastDetected;
+          sendBtn.classList.remove('opacity-50', 'pointer-events-none');
+          if(navigator.vibrate) navigator.vibrate(20);
+        }
+
+        isProcessing = false;
+        requestAnimationFrame(loop);
+      };
+      loop();
+    }
+
+    function sendResult() {
+      if (!lastDetected) return;
+      // 親ウィンドウへデータを送信
+      if (window.opener) {
+        window.opener.postMessage({
+          type: 'SCAN_RESULT',
+          value: lastDetected
+        }, "*");
+      }
+      window.close();
+    }
+
+    window.onload = setupCamera;
+  </script>
+</body>
+</html>
